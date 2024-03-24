@@ -96,6 +96,9 @@ class DjangoBulkXLSXUpload():
                 #   columnName: Nombre de la columna en el Excel del valor a buscar
                 #   attname: Nombre del atibuto del modelo para buscar
                 #   sep: Separador textual de cada campo a buscar en la relación
+
+                # Se podría manejar una tupla de solo 3 separadores para asignaciones
+                # de foreign key
                 column: Union[models.base.ModelBase, str, tuple] = values[keyModel]
                 isColumn = isinstance(column, str) and column != ""
                 isModel = isinstance(column, models.base.ModelBase)
@@ -104,15 +107,25 @@ class DjangoBulkXLSXUpload():
                     raise Exception(
                         "Value of {0} isn't string or a valid Django Model".format(column))
                 if isinstance(column, tuple):
-                    if len(column) != 4:
+                    lenTupla = len(column)
+                    if lenTupla not in [4, 5]:
                         raise Exception("Tuple {0} isn't good defined enough".format(column))
-                    rule.addMatch(
-                            keyModel,
-                            attribute= column[1],
-                            model = column[0],
-                            sep = column[3],
-                            remoteAttribute = column[2]
-                            )
+                    if lenTupla == 4:
+                        rule.addMatch(
+                                keyModel,
+                                attribute= column[1],
+                                model = column[0],
+                                sep = column[3],
+                                remoteAttribute = column[2],
+                                )
+                    else:
+                        rule.addMatch(
+                                keyModel,
+                                attribute = column[1],
+                                model = column[0],
+                                remoteAttribute = column[2],
+                                localAttr= column[3]
+                                )
                 else:
                     rule.addMatch(
                             keyModel,
@@ -193,8 +206,8 @@ class UploadRule():
                 "type": field.get_internal_type()
                 })
 
-    def addMatch(self, nameCol, attribute = None, model = None, sep = None, remoteAttribute = None):
-        match = Match(nameCol, attribute, model, sep, remoteAttribute)
+    def addMatch(self, nameCol, attribute = None, model = None, sep = None, remoteAttribute = None, localAttr = None):
+        match = Match(nameCol, attribute, model, sep, remoteAttribute, localAttr)
         self.matches.append(match)
 
     def generateItems(self, records, items={}, bulk_save = False):
@@ -216,28 +229,45 @@ class UploadRule():
                     # por ser de una relación ManyToManyField
                     forAssignement = True
                     if match.remoteAttribute != None:
-                        # Necesitamos guardar para que pueda existir la relación
-                        obj.save()
-                        # Primer caso especial, esto es de ManyToManyField
                         forAssignement = False
-                        # Values for search
-                        values = record[match.nameCol].split(match.sep)
-                        modelForQuery = match.model
-                        # manyModel = None
-                        for value in values:
-                            try:
-                                # Primero lo buscamos para que quede en manyModel
-                                txtQuery = '''modelForQuery.objects.filter({0} = "{1}").first()'''.format(
-                                            match.remoteAttribute,
-                                            value
-                                        )
-                                manyModel = eval(txtQuery)
-                                # Ahora tenemos que añadirlo
-                                txtExec = "obj.{0}.add(manyModel)".format(match.attribute)
-                                exec(txtExec)
-                            except Exception as er:
-                                print("Hay un error con una asignación ManyToManyField: {0}".format(er))
-                                pass
+                        # Van a haber dos casos, el de ManyToManyField y el de ForeignKey!
+                        if not match.sep:
+                            # En este caso, es ForeignKey
+                            modelForQuery = match.model
+                            # Ahora a buscar el item remoto
+
+                            txtQuery = '''modelForQuery.objects.get({0} = "{1}")'''.format(
+                                    match.remoteAttribute,
+                                    record[match.nameCol]
+                                    )
+                            modelForeign = eval(txtQuery)
+                            # Ahora se puede relacionar
+                            txtExec = "obj.{0} = modelForeign".format(
+                                    match.localAttr,
+                                    )
+                            exec(txtExec)
+                        else:
+                            # Necesitamos guardar para que pueda existir la relación
+                            obj.save()
+                            # Primer caso especial, esto es de ManyToManyField
+                            # Values for search
+                            values = record[match.nameCol].split(match.sep)
+                            modelForQuery = match.model
+                            # manyModel = None
+                            for value in values:
+                                try:
+                                    # Primero lo buscamos para que quede en manyModel
+                                    txtQuery = '''modelForQuery.objects.filter({0} = "{1}").first()'''.format(
+                                                match.remoteAttribute,
+                                                value
+                                            )
+                                    manyModel = eval(txtQuery)
+                                    # Ahora tenemos que añadirlo
+                                    txtExec = "obj.{0}.add(manyModel)".format(match.attribute)
+                                    exec(txtExec)
+                                except Exception as er:
+                                    print("Hay un error con una asignación ManyToManyField: {0}".format(er))
+                                    pass
                     elif match.nameCol:
                         assert(match.attribute in [x['name'] for x in self.itemsModel])
                         value = record[match.nameCol]
@@ -254,7 +284,7 @@ class UploadRule():
                     print("Se supone que estoy guardando un objeto: {0}".format(obj))
                     obj.save()
             except Exception as e:
-                # raise Exception(e)
+                raise Exception(e)
                 errores.append("Error: {0}".format(str(e)))
                 obj = None
             objs.append(obj)
@@ -276,12 +306,14 @@ class Match():
     También para relaciones de ManyToManyField de items ya almacenados
     '''
     def __init__(self, attribute, nameCol = None,
-                 model=None, sep=None, remoteAttribute = None):
+                 model=None, sep=None, remoteAttribute = None,
+                 localAttr = None):
         self.attribute = attribute
         self.nameCol = nameCol
         self.model = model
         self.sep = sep
         self.remoteAttribute = remoteAttribute
+        self.localAttr = localAttr
         if (not nameCol) and (not model):
             raise Exception("Neither nameCol or model are defined")
         if nameCol and model and not remoteAttribute:
