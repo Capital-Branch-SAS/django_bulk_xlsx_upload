@@ -279,7 +279,7 @@ class UploadRule():
                     # para no pasarle valores que no son!
                     itemModel_ = [x for x in self.itemsModel if x['name'] == match.attribute]
                     itemModel = {}
-                    if len(itemModel) > 0:
+                    if len(itemModel_) > 0:
                         itemModel = itemModel_[0]
                     # Chequeo de tipos!
                     noGrabar = False
@@ -287,7 +287,7 @@ class UploadRule():
                         try:
                             exec("int(value)")
                         except:
-                            nograbar = True
+                            noGrabar = True
                     toExec = '''obj.{0} = value'''.format(
                         match.attribute
                         )
