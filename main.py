@@ -277,10 +277,13 @@ class UploadRule():
                         value = items[match.model][i]
                     # Antes de la ejecución, vamos a confirmar si es un número y necesita un valor
                     # para no pasarle valores que no son!
-                    itemModel = [x for x in self.itemsModel if x['name'] == match.attribute][0]
+                    itemModel_ = [x for x in self.itemsModel if x['name'] == match.attribute]
+                    itemModel = {}
+                    if len(itemModel) > 0:
+                        itemModel = itemModel_[0]
                     # Chequeo de tipos!
                     noGrabar = False
-                    if itemModel["type"] == "IntegerField":
+                    if itemModel.get("type") == "IntegerField":
                         try:
                             exec("int(value)")
                         except:
