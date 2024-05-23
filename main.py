@@ -275,10 +275,20 @@ class UploadRule():
                         # Esto creo que debe venir de items, enviando modelos desde
                         # arriba
                         value = items[match.model][i]
+                    # Antes de la ejecución, vamos a confirmar si es un número y necesita un valor
+                    # para no pasarle valores que no son!
+                    itemModel = [x for x in self.itemsModel if x['name'] == match.attribute][0]
+                    # Chequeo de tipos!
+                    noGrabar = False
+                    if itemModel["type"] == "IntegerField":
+                        try:
+                            exec("int(value)")
+                        except:
+                            nograbar = True
                     toExec = '''obj.{0} = value'''.format(
                         match.attribute
                         )
-                    if forAssignement:
+                    if forAssignement and not noGrabar:
                         exec(toExec)
                 if not bulk_save:
                     print("Se supone que estoy guardando un objeto: {0}".format(obj))
