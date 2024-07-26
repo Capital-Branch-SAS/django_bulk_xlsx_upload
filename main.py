@@ -68,16 +68,15 @@ class DjangoBulkXLSXUpload():
 
     def loadRules(self, data, bulk_save=False):
         '''
-        Estructura ejemplo de las reglas:
-            {
-                Usuario: {"name": "Nombre",
-                           "lastname": "Apellido",
-                           "permisos": Permisos,
-                           "roles": (Rol, "Roles", "name", "-")
-                          },
-                Permisos: {"lectura": "Lectura",
-                           "escritura": "Escritura"}
-            }
+        Acá vamos a ordenar el tema de la librería de la carga masiva.
+        Así que:
+            - Nombre de la clave: campo a llenarse, ejemplo: modelo.campo
+            - type: Tipo de relación a crear
+            - model: Si hay un modelo asociado, acá va. Ya sea de relación o anterior para asignar
+                (es decir, por ejemplo los datos de contacto de un modelo posterior de la regla)
+            - remoteAttribute: Atributo remoto que hay que buscar según el tipo de relación
+            - value: Según el caso, asigna directamente el valor (type: fixed)
+            - separator: Valor separador de relaciones múltiples
         '''
         for model in data.keys():
             assert(isinstance(model, models.base.ModelBase))
@@ -99,38 +98,55 @@ class DjangoBulkXLSXUpload():
 
                 # Se podría manejar una tupla de solo 3 separadores para asignaciones
                 # de foreign key
-                column: Union[models.base.ModelBase, str, tuple] = values[keyModel]
-                isColumn = isinstance(column, str) and column != ""
-                isModel = isinstance(column, models.base.ModelBase)
-                isTuple = isinstance(column, tuple) and column != ""
-                if not (isColumn or isModel or isTuple):
+                column: dict = values[keyModel]
+                # isColumn = isinstance(column, str) and column != ""
+                # isModel = isinstance(column, models.base.ModelBase)
+                # isTuple = isinstance(column, tuple) and column != ""
+                isDict = isinstance(column, dict)
+                if not isDict:
                     raise Exception(
                         "Value of {0} isn't string or a valid Django Model".format(column))
-                if isinstance(column, tuple):
-                    lenTupla = len(column)
-                    if lenTupla not in [4, 5]:
-                        raise Exception("Tuple {0} isn't good defined enough".format(column))
-                    if lenTupla == 4:
-                        rule.addMatch(
-                                keyModel,
-                                attribute= column[1],
-                                model = column[0],
-                                sep = column[3],
-                                remoteAttribute = column[2],
-                                )
-                    else:
-                        rule.addMatch(
-                                keyModel,
-                                attribute = column[1],
-                                model = column[0],
-                                remoteAttribute = column[2],
-                                localAttr= column[3]
-                                )
-                else:
+                if column.get('type') == "array_hstore":
+                    # Es un arreglo de hstores
+                    # addMatch(self, nameCol, attribute = None, model = None, sep = None, remoteAttribute = None, localAttr = None, fields = None):
                     rule.addMatch(
-                            keyModel,
-                            attribute = column if isColumn else None,
-                            model = column if isModel else None)
+                            nameCol = column.get('column'),
+                            model = None,
+                            attribute = column.get('parameter'),
+                            fields = column.get('fields'),
+                            typeMatch = 'array_hstore'
+                            )
+                elif column.get('type') == 'fixed':
+                    rule.addMatch(
+                            attribute = keyModel,
+                            typeMatch = 'fixed',
+                            # En value viene el modelo o dato a asignar
+                            # directo
+                            fixedValue = column.get('value')
+                            )
+                if column.get('type') == 'manytomany':
+                    rule.addMatch(
+                            nameCol = column.get('column'),
+                            attribute= keyModel,
+                            model = column.get('model'),
+                            sep = column.get('separator'),
+                            remoteAttribute = column.get('remoteAttribute'),
+                            typeMatch = 'manytomany'
+                            )
+                if column.get('type') == 'foreign':
+                    rule.addMatch(
+                            attribute = keyModel,
+                            nameCol = column.get('column'),
+                            model = column.get('model'),
+                            remoteAttribute = column.get('remoteAttribute'),
+                            typeMatch = 'foreign'
+                            )
+                if column.get('type') == 'simple':
+                    rule.addMatch(
+                            attribute = keyModel,
+                            nameCol = column.get('column'),
+                            typeMatch = "simple"
+                            )
             self.rules.append(rule)
         if len(self.rules) == 1 and bulk_save:
             self.bulk_save = True
@@ -206,8 +222,18 @@ class UploadRule():
                 "type": field.get_internal_type()
                 })
 
-    def addMatch(self, nameCol, attribute = None, model = None, sep = None, remoteAttribute = None, localAttr = None):
-        match = Match(nameCol, attribute, model, sep, remoteAttribute, localAttr)
+    def addMatch(self, nameCol = None, attribute = None, model = None, sep = None, remoteAttribute = None, localAttr = None, fields = None, typeMatch = None, fixedValue = None):
+        match = Match(
+                nameCol = nameCol,
+                attribute = attribute,
+                model = model,
+                sep = sep,
+                remoteAttribute = remoteAttribute,
+                localAttr = localAttr,
+                fields = fields,
+                typeMatch = typeMatch,
+                fixedValue = fixedValue)
+        print(f"Agregando match de tipo {typeMatch} y attr {attribute}")
         self.matches.append(match)
 
     def generateItems(self, records, items={}, bulk_save = False):
@@ -222,77 +248,99 @@ class UploadRule():
             try:
                 modelCopy = deepcopy(self.model)
                 obj = modelCopy()
+                match: Match
                 for match in self.matches:
+                    print("---------")
+                    print(f"Tipo de match: {match.typeMatch}. Attr, {match.attribute}, remoteAttribute: {match.remoteAttribute}, localAttr: {match.localAttr}")
+                    print(f"Assert: {match.attribute} en {[x['name'] for x in self.itemsModel]}")
+                    try:
+                        assert(match.attribute in [x['name'] for x in self.itemsModel])
+                    except:
+                        assert(match.attribute + "_id" in [x['name'] for x in self.itemsModel])
                     value = None
                     # La variable forAssignement se da para que el valor que se compute
                     # se asignado directamente. De lo contrario, se hará con .add()
                     # por ser de una relación ManyToManyField
                     forAssignement = True
-                    if match.remoteAttribute != None:
+                    if match.typeMatch == "array_hstore":
+                        # Acá la idea es añadir los fields al array
+                        # de atributos del objeto.atributo
+                        condNone = eval(f"obj.{match.attribute} is None")
+                        if condNone:
+                            exec(f"obj.{match.attribute} = []")
+                        txtExec = f'obj.{match.attribute}.append({match.fields})'
+                        exec(txtExec)
+                    elif match.typeMatch == "fixed":
+                        # Acá hay que asignar directamente una referencia o valor
+                        # TODO: El valor no pasarlo como texto!
+                        txtExec = f'obj.{match.attribute} = match.fixedValue'
+                        print("ALERTA: " + txtExec)
+                        exec(txtExec)
+                        print(f"Se debió asignar entonces a obj.{match.attribute} el valor: {match.fixedValue}")
+                        confirma = eval(f'obj.{match.attribute}')
+                        print(f"Confirmación: {confirma}")
+                    elif match.typeMatch == 'foreign':
                         forAssignement = False
-                        # Van a haber dos casos, el de ManyToManyField y el de ForeignKey!
-                        if not match.sep:
-                            # En este caso, es ForeignKey
-                            modelForQuery = match.model
-                            # Ahora a buscar el item remoto
+                        modelForQuery = match.model
+                        # Ahora a buscar el item remoto
 
-                            txtQuery = '''modelForQuery.objects.get({0} = "{1}")'''.format(
-                                    match.remoteAttribute,
-                                    record[match.nameCol]
-                                    )
-                            modelForeign = eval(txtQuery)
-                            # Ahora se puede relacionar
-                            txtExec = "obj.{0} = modelForeign".format(
-                                    match.localAttr,
-                                    )
-                            exec(txtExec)
-                        else:
-                            # Necesitamos guardar para que pueda existir la relación
-                            obj.save()
-                            # Primer caso especial, esto es de ManyToManyField
-                            # Values for search
-                            values = record[match.nameCol].split(match.sep)
-                            modelForQuery = match.model
-                            # manyModel = None
-                            for value in values:
-                                try:
-                                    # Primero lo buscamos para que quede en manyModel
-                                    txtQuery = '''modelForQuery.objects.filter({0} = "{1}").first()'''.format(
-                                                match.remoteAttribute,
-                                                value
-                                            )
-                                    manyModel = eval(txtQuery)
-                                    # Ahora tenemos que añadirlo
-                                    txtExec = "obj.{0}.add(manyModel)".format(match.attribute)
-                                    exec(txtExec)
-                                except Exception as er:
-                                    print("Hay un error con una asignación ManyToManyField: {0}".format(er))
-                                    pass
-                    elif match.nameCol:
-                        assert(match.attribute in [x['name'] for x in self.itemsModel])
+                        txtQuery = '''modelForQuery.objects.get({0} = "{1}")'''.format(
+                                match.remoteAttribute,
+                                record[match.nameCol]
+                                )
+                        modelForeign = eval(txtQuery)
+                        # Ahora se puede relacionar
+                        txtExec = "obj.{0} = modelForeign".format(
+                                match.attribute,
+                                )
+                        exec(txtExec)
+                    elif match.typeMatch == 'manytomany':
+                        # Necesitamos guardar para que pueda existir la relación
+                        obj.save()
+                        # Primer caso especial, esto es de ManyToManyField
+                        # Values for search
+                        values = record[match.nameCol].split(match.sep)
+                        modelForQuery = match.model
+                        # manyModel = None
+                        for value in values:
+                            try:
+                                # Primero lo buscamos para que quede en manyModel
+                                txtQuery = '''modelForQuery.objects.filter({0} = "{1}").first()'''.format(
+                                            match.remoteAttribute,
+                                            value
+                                        )
+                                manyModel = eval(txtQuery)
+                                # Ahora tenemos que añadirlo
+                                txtExec = "obj.{0}.add(manyModel)".format(match.attribute)
+                                exec(txtExec)
+                            except Exception as er:
+                                print("Hay un error con una asignación ManyToManyField: {0}".format(er))
+                                pass
+                    elif match.typeMatch == "simple":
                         value = record[match.nameCol]
+                        # Antes de la ejecución, vamos a confirmar si es un número y necesita un valor
+                        # para no pasarle valores que no son!
+                        itemModel_ = [x for x in self.itemsModel if x['name'] == match.attribute]
+                        itemModel = {}
+                        if len(itemModel_) > 0:
+                            itemModel = itemModel_[0]
+                        # Chequeo de tipos!
+                        noGrabar = False
+                        if itemModel.get("type") == "IntegerField":
+                            try:
+                                exec("int(value)")
+                            except:
+                                noGrabar = True
+                        toExec = '''obj.{0} = value'''.format(
+                            match.attribute
+                            )
+                        if forAssignement and not noGrabar:
+                            exec(toExec)
                     else:
                         # Esto creo que debe venir de items, enviando modelos desde
                         # arriba
                         value = items[match.model][i]
-                    # Antes de la ejecución, vamos a confirmar si es un número y necesita un valor
-                    # para no pasarle valores que no son!
-                    itemModel_ = [x for x in self.itemsModel if x['name'] == match.attribute]
-                    itemModel = {}
-                    if len(itemModel_) > 0:
-                        itemModel = itemModel_[0]
-                    # Chequeo de tipos!
-                    noGrabar = False
-                    if itemModel.get("type") == "IntegerField":
-                        try:
-                            exec("int(value)")
-                        except:
-                            noGrabar = True
-                    toExec = '''obj.{0} = value'''.format(
-                        match.attribute
-                        )
-                    if forAssignement and not noGrabar:
-                        exec(toExec)
+                    
                 if not bulk_save:
                     print("Se supone que estoy guardando un objeto: {0}".format(obj))
                     obj.save()
@@ -320,17 +368,17 @@ class Match():
     '''
     def __init__(self, attribute, nameCol = None,
                  model=None, sep=None, remoteAttribute = None,
-                 localAttr = None):
+                 localAttr = None, fields = None, typeMatch=None,
+                 fixedValue = None):
         self.attribute = attribute
         self.nameCol = nameCol
         self.model = model
         self.sep = sep
         self.remoteAttribute = remoteAttribute
         self.localAttr = localAttr
-        if (not nameCol) and (not model):
-            raise Exception("Neither nameCol or model are defined")
-        if nameCol and model and not remoteAttribute:
-            raise Exception("Both nameCol and model are defined")
+        self.fields = fields
+        self.typeMatch = typeMatch
+        self.fixedValue = fixedValue
 
     def __repr__(self):
         if self.nameCol:
