@@ -1,7 +1,7 @@
 from django.db import models
 from django.db.models.fields.related import ForeignKey
 import pyexcel
-from typing import Union
+from typing import Union, Dict
 import datetime
 from copy import deepcopy
 
@@ -249,10 +249,12 @@ class UploadRule():
                 modelCopy = deepcopy(self.model)
                 obj = modelCopy()
                 match: Match
+                asignacion = {}
                 for match in self.matches:
                     print("---------")
                     print(f"Tipo de match: {match.typeMatch}. Attr, {match.attribute}, remoteAttribute: {match.remoteAttribute}, localAttr: {match.localAttr}")
                     print(f"Assert: {match.attribute} en {[x['name'] for x in self.itemsModel]}")
+                    print(f"Récord: {record}")
                     try:
                         assert(match.attribute in [x['name'] for x in self.itemsModel])
                     except:
@@ -268,7 +270,23 @@ class UploadRule():
                         condNone = eval(f"obj.{match.attribute} is None")
                         if condNone:
                             exec(f"obj.{match.attribute} = []")
-                        txtExec = f'obj.{match.attribute}.append({match.fields})'
+                        # Hay que modificar fields para que no tome literalmente el valor
+                        # de {{value}}
+                        if match.fields != None:
+                            print(f"A hacer for de {match.fields.keys()}")
+                            for key in match.fields.keys():
+                                print(f"Una key de este for es: {key}")
+                                field = match.fields[key]
+                                if type(field) == str:
+                                    if "{{column:" in field and "}}" in field:
+                                        column = field.replace("{{column:", "").replace("}}", "")
+                                        # match.fields[key] = record[column]
+                                        asignacion[key] = record[column]
+                                    else:
+                                        asignacion[key] = field
+                                else:
+                                    asignacion[key] = None
+                        txtExec = f'obj.{match.attribute}.append({asignacion})'
                         exec(txtExec)
                     elif match.typeMatch == "fixed":
                         # Acá hay que asignar directamente una referencia o valor
@@ -376,7 +394,7 @@ class Match():
         self.sep = sep
         self.remoteAttribute = remoteAttribute
         self.localAttr = localAttr
-        self.fields = fields
+        self.fields: Union[Dict, None] = fields
         self.typeMatch = typeMatch
         self.fixedValue = fixedValue
 
