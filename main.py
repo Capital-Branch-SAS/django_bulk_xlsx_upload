@@ -79,7 +79,7 @@ class DjangoBulkXLSXUpload():
             - value: Según el caso, asigna directamente el valor (type: fixed)
             - separator: Valor separador de relaciones múltiples
         '''
-        for model in data.keys():
+        for im, model in enumerate(data.keys()):
             # Hay que revisar por cada modelo por si hay saveKwargs
             assert(isinstance(model, models.base.ModelBase))
             reglas: Union[Dict, None] = None
@@ -87,7 +87,6 @@ class DjangoBulkXLSXUpload():
                 if model in self.saveKwargs.keys():
                     reglas = self.saveKwargs[model]
             values = data[model]
-            print(f"Las reglas son!: {reglas} y el modelo es {model}")
             rule = UploadRule(model, saveKwargsRule = reglas)
             for keyModel in values.keys():
                 # keymodel es el nombre del atributo
@@ -153,6 +152,20 @@ class DjangoBulkXLSXUpload():
                             attribute = keyModel,
                             nameCol = column.get('column'),
                             typeMatch = "simple"
+                            )
+                elif column.get('type') == 'model':
+                    # Check de carga masiva
+                    if bulk_save:
+                        raise Exception("bulk_save no compatible con type model")
+                    # Validación de que el modelo esté antes:
+                    indexModel = list(data.keys()).index(column.get('model'))
+                    assert indexModel < im, "Modelo no referenciado antes"
+                    # Aca la idea es asignar un modelo recién creado
+                    # en un paso anterior
+                    rule.addMatch(
+                            attribute= keyModel,
+                            typeMatch = "model",
+                            model = column.get('model')
                             )
                 else:
                     raise Exception("Falta especificar bien el tipo")
@@ -243,7 +256,6 @@ class UploadRule():
                 fields = fields,
                 typeMatch = typeMatch,
                 fixedValue = fixedValue)
-        print(f"Agregando match de tipo {typeMatch} y attr {attribute}")
         self.matches.append(match)
 
     def generateItems(self, records, items={}, bulk_save = False):
@@ -261,14 +273,11 @@ class UploadRule():
                 match: Match
                 asignacion = {}
                 for match in self.matches:
-                    print("---------")
-                    print(f"Tipo de match: {match.typeMatch}. Attr, {match.attribute}, remoteAttribute: {match.remoteAttribute}, localAttr: {match.localAttr}")
-                    print(f"Assert: {match.attribute} en {[x['name'] for x in self.itemsModel]}")
-                    print(f"Récord: {record}")
                     try:
                         assert(match.attribute in [x['name'] for x in self.itemsModel])
                     except:
-                        assert(match.attribute + "_id" in [x['name'] for x in self.itemsModel])
+                        if match.typeMatch != "manytomany":
+                            assert(match.attribute + "_id" in [x['name'] for x in self.itemsModel])
                     value = None
                     # La variable forAssignement se da para que el valor que se compute
                     # se asignado directamente. De lo contrario, se hará con .add()
@@ -283,9 +292,7 @@ class UploadRule():
                         # Hay que modificar fields para que no tome literalmente el valor
                         # de {{value}}
                         if match.fields != None:
-                            print(f"A hacer for de {match.fields.keys()}")
                             for key in match.fields.keys():
-                                print(f"Una key de este for es: {key}")
                                 field = match.fields[key]
                                 if type(field) == str:
                                     if "{{column:" in field and "}}" in field:
@@ -302,11 +309,14 @@ class UploadRule():
                         # Acá hay que asignar directamente una referencia o valor
                         # TODO: El valor no pasarlo como texto!
                         txtExec = f'obj.{match.attribute} = match.fixedValue'
-                        print("ALERTA: " + txtExec)
                         exec(txtExec)
-                        print(f"Se debió asignar entonces a obj.{match.attribute} el valor: {match.fixedValue}")
                         confirma = eval(f'obj.{match.attribute}')
-                        print(f"Confirmación: {confirma}")
+                    elif match.typeMatch == "model":
+                        # Asignación de modelo cargado
+                        # Buscar el anterior:
+                        # TODO: Por ahora está 0 pero luego pendiente añadir a la regla el índice
+                        txtExec = f"obj.{match.attribute} = items[match.model][0]"
+                        exec(txtExec)
                     elif match.typeMatch == 'foreign':
                         forAssignement = False
                         modelForQuery = match.model
@@ -342,7 +352,6 @@ class UploadRule():
                                 txtExec = "obj.{0}.add(manyModel)".format(match.attribute)
                                 exec(txtExec)
                             except Exception as er:
-                                print("Hay un error con una asignación ManyToManyField: {0}".format(er))
                                 pass
                     elif match.typeMatch == "simple":
                         value = record[match.nameCol]
@@ -370,7 +379,6 @@ class UploadRule():
                         value = items[match.model][i]
                     
                 if not bulk_save:
-                    print("Se supone que estoy guardando un objeto: {0}".format(obj))
                     # Ahora vamos a utilizar las reglas!
                     # La idea es que venga la columna de donde se va a leer la data
                     # y el separador correspondiente.
@@ -396,7 +404,6 @@ class UploadRule():
                 obj = None
             objs.append(obj)
         if bulk_save:
-            print("Se supone que estoy gurdando todos los objetos: {0}".format(objs))
             self.model.objects.bulk_create(objs)
         return objs, errores
 
@@ -418,7 +425,7 @@ class Match():
                  fixedValue = None):
         self.attribute = attribute
         self.nameCol = nameCol
-        self.model = model
+        self.model: Union[models.base.ModelBase, None] = model
         self.sep = sep
         self.remoteAttribute = remoteAttribute
         self.localAttr = localAttr
