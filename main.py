@@ -11,7 +11,7 @@ class DjangoBulkXLSXUpload():
     Microsoft Excel XLSX file
     '''
 
-    def __init__(self, rules = None):
+    def __init__(self, rules = None, saveKwargs: Union[Dict, None] = None):
         self.file = None
         self.sheet = None
         self.records = []
@@ -19,6 +19,7 @@ class DjangoBulkXLSXUpload():
         # Array por modelos
         self.saved_models = {}
         self.rules: list[UploadRule] = []
+        self.saveKwargs: Union[Dict, None] = None
         if rules:
             self.loadRules(rules)
 
@@ -41,12 +42,12 @@ class DjangoBulkXLSXUpload():
         records = self.sheet.to_records()
         for i, record in enumerate(records):
             # Acá viene la lógica de tipos
-            if i > column_by_row:
-                values = list(record.values())
-                vacios = [x == "" for x in values]
-                if (vacios.count(True) == len(vacios)):
-                    break
-                self.records.append(record)
+            # if i > column_by_row:
+            values = list(record.values())
+            vacios = [x == "" for x in values]
+            if (vacios.count(True) == len(vacios)):
+                break
+            self.records.append(record)
         # Ahora vamos a iterar por reglas de modelos
         # con los datos de las reglas con sus respectivos
         # modelos prioritarios
@@ -79,9 +80,15 @@ class DjangoBulkXLSXUpload():
             - separator: Valor separador de relaciones múltiples
         '''
         for model in data.keys():
+            # Hay que revisar por cada modelo por si hay saveKwargs
             assert(isinstance(model, models.base.ModelBase))
+            reglas: Union[Dict, None] = None
+            if isinstance(self.saveKwargs, dict):
+                if model in self.saveKwargs.keys():
+                    reglas = self.saveKwargs[model]
             values = data[model]
-            rule = UploadRule(model)
+            print(f"Las reglas son!: {reglas} y el modelo es {model}")
+            rule = UploadRule(model, saveKwargsRule = reglas)
             for keyModel in values.keys():
                 # keymodel es el nombre del atributo
                 # Puede ser el nombre de la columna si es string
@@ -124,7 +131,7 @@ class DjangoBulkXLSXUpload():
                             # directo
                             fixedValue = column.get('value')
                             )
-                if column.get('type') == 'manytomany':
+                elif column.get('type') == 'manytomany':
                     rule.addMatch(
                             nameCol = column.get('column'),
                             attribute= keyModel,
@@ -133,7 +140,7 @@ class DjangoBulkXLSXUpload():
                             remoteAttribute = column.get('remoteAttribute'),
                             typeMatch = 'manytomany'
                             )
-                if column.get('type') == 'foreign':
+                elif column.get('type') == 'foreign':
                     rule.addMatch(
                             attribute = keyModel,
                             nameCol = column.get('column'),
@@ -141,12 +148,14 @@ class DjangoBulkXLSXUpload():
                             remoteAttribute = column.get('remoteAttribute'),
                             typeMatch = 'foreign'
                             )
-                if column.get('type') == 'simple':
+                elif column.get('type') == 'simple':
                     rule.addMatch(
                             attribute = keyModel,
                             nameCol = column.get('column'),
                             typeMatch = "simple"
                             )
+                else:
+                    raise Exception("Falta especificar bien el tipo")
             self.rules.append(rule)
         if len(self.rules) == 1 and bulk_save:
             self.bulk_save = True
@@ -205,7 +214,7 @@ class UploadRule():
         - Un modelo de Django
         - Este modelo tiene varias correspondencias de columnas
     '''
-    def __init__(self, model):
+    def __init__(self, model, saveKwargsRule: Union[Dict, None] = None):
         self.model: models.Model = model
         self.matches: list[Match] = []
         self.order: int = 0
@@ -213,6 +222,7 @@ class UploadRule():
         # objs será una lista de mapas con la estructura:
         # {index: int, obj: obj | None}
         self.objs = []
+        self.saveKwargsRule: Union[Dict, None] = saveKwargsRule
         # itemsModel contendrá la lista de los items
         # del modelo junto con sus tipos
         self.itemsModel = []
@@ -361,7 +371,25 @@ class UploadRule():
                     
                 if not bulk_save:
                     print("Se supone que estoy guardando un objeto: {0}".format(obj))
-                    obj.save()
+                    # Ahora vamos a utilizar las reglas!
+                    # La idea es que venga la columna de donde se va a leer la data
+                    # y el separador correspondiente.
+                    saveWithKw = False
+                    if isinstance(self.saveKwargsRule, dict):
+                        # column es la columna de donde se obtendrá la información de los campos
+                        # nameKwarg es el nombre del argumento que se enviará a save literalmente
+                        # Ej: uoms
+                        column = self.saveKwargsRule.get('column')
+                        nameKwarg = self.saveKwargsRule.get('nameKwarg')
+                        sep = self.saveKwargsRule.get('sep')
+                        if column and sep and nameKwarg:
+                            dataColumn = record.get(column)
+                            if dataColumn:
+                                saveWithKw = True
+                                txtExecSave = f'''obj.save({nameKwarg} = "{dataColumn}", sep = "{sep}")'''
+                                exec(txtExecSave)
+                    if not saveWithKw:
+                        obj.save()
             except Exception as e:
                 raise Exception(e)
                 errores.append("Error: {0}".format(str(e)))
